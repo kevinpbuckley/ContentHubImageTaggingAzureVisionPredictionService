@@ -1,0 +1,128 @@
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.RegularExpressions;
+using System.Threading.Tasks;
+using Newtonsoft.Json.Linq;
+using Newtonsoft.Json;
+
+
+/// <summary>
+/// Represents the results provided by the AI
+/// </summary>
+public class AIResult
+{
+    /// <summary>
+    /// Gets or sets the taxonomy results from the AI
+    /// </summary>
+    [JsonProperty("taxonomies")]
+    public IEnumerable<AITaxonomyResult> Taxonomies { get; set; }
+
+    /// <summary>
+    /// Gets or sets the tags results from the AI
+    /// </summary>
+    [JsonProperty("imageTags")]
+    public IEnumerable<string> ImageTags { get; set; }
+
+    public AIResult()
+    {
+        Taxonomies = new List<AITaxonomyResult>();
+        ImageTags = new List<string>();
+    }
+}
+
+/// <summary>
+/// Represents the result for one taxonomy from the AI
+/// </summary>
+public class AITaxonomyResult
+{
+    /// <summary>
+    /// Gets or sets the name of the relation binding the asset definition with the taxonomy
+    /// </summary>
+    [JsonProperty("name")]
+    public string RelationName { get; set; }
+
+    /// <summary>
+    /// Gets or sets the list of taxonomy identifiers returned by the AI
+    /// </summary>
+    [JsonProperty("selectedLabels")]
+    public IEnumerable<string> SelectedIdentifiers { get; set; }
+
+    public AITaxonomyResult()
+    {
+        SelectedIdentifiers = new List<string>();
+    }
+}
+
+const string TaxonomiesKeyValues = "taxonomies";
+const string TagsKeyValues = "imageTags";
+const string TagToAssetRelationName = "TagToAsset";
+const string TaxonomyRelationName = "name";
+const string TaxonomySelectedLabels = "selectedLabels";
+
+var definition = await Context.Entity.GetEntityDefinitionAsync();
+if (definition.Name != "M.Asset")
+{
+    MClient.Logger.Error($"The definition {definition.Name} is not valid for this script");
+    return;
+}
+
+// We can't update a system owned entity
+if (Context.Entity.IsSystemOwned)
+{
+    return;
+}
+
+// Parse Azure Vision Prediction result and filter tags by probability > 0.65
+var azureResult = JObject.Parse(Context.AIResult.ToString());
+var predictions = azureResult["predictions"]?
+    .Where(p => (double)p["probability"] > 0.65)
+    .Select(p => (string)p["tagName"])
+    .ToList() ?? new List<string>();
+
+// Existing AIResult parsing for taxonomies
+var aiResult = Context.AIResult.ToObject<AIResult>();
+Dictionary<string, IEnumerable<string>> suggestionsByRelationName = new Dictionary<string, IEnumerable<string>>();
+
+// Adds the taxonomies in the suggestions 
+var taxonomyIdentifiersByRelationName = GetTaxonomyIdentifiersByRelationName(Context.Entity, aiResult.Taxonomies, definition);
+
+foreach (var (key, value) in taxonomyIdentifiersByRelationName)
+{
+    suggestionsByRelationName.Add(key, value);
+}
+
+// Add filtered Azure Vision tags to TagToAsset
+suggestionsByRelationName[TagToAssetRelationName] = predictions;
+
+// returns the suggestions in the Context bag
+Context.Suggestions = suggestionsByRelationName;
+
+private Dictionary<string, IEnumerable<string>> GetTaxonomyIdentifiersByRelationName(
+    IEntity asset,
+    IEnumerable<AITaxonomyResult> taxonomies,
+    IEntityDefinition definition)
+{
+    var taxonomyIdentifiersByRelationName = new Dictionary<string, IEnumerable<string>>();
+
+    foreach (var taxonomy in taxonomies)
+    {
+        var relationName = taxonomy.RelationName;
+
+        MClient.Logger.Info($"Processing taxonomies from relation '{relationName}' for asset id '{asset.Id}'");
+
+        var relationDefinition = definition.GetRelationDefinition(relationName, RelationRole.Parent)
+            ?? definition.GetRelationDefinition(relationName, RelationRole.Child);
+
+        if (relationDefinition is null)
+        {
+            continue;
+        }
+
+        if (taxonomy.SelectedIdentifiers?.Any() == true)
+        {
+            taxonomyIdentifiersByRelationName.Add(relationName, taxonomy.SelectedIdentifiers);
+        }
+    }
+
+    return taxonomyIdentifiersByRelationName;
+}
