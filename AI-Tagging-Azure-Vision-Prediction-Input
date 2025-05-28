@@ -1,0 +1,16 @@
+using System.Collections.Generic;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+
+// The context based full entity loaded
+IEntity entity = Context.Entity;
+
+MClient.Logger.Info($"Entity id: {entity.Id.ToString()}");
+
+// Prepare payload for Azure Computer Vision Prediction API
+// The input url in injected in the message body with the variable name specified
+// creates body {url : "the url you want to send gets pushed here"}
+Context.InputUrlName = "url";
+
+// header for auth is attached based on Connector Configuration.  Add below if you need to add more headers
+Context.Headers = new Dictionary<string, string>();
